@@ -1,6 +1,6 @@
 import { CONFIG } from '@/config';
 import { supabase } from '@/lib/supabase';
-import { useAuth } from '@/composables/useAuth';
+import { useAuth, waitForSession } from '@/composables/useAuth';
 import { useSystemPopup } from '@/composables/useSystemPopup';
 import { friendlyMessage, NETWORK_ERROR_MESSAGE } from '@/api/errorMessages';
 import type { ApiErrorBody } from '@/types';
@@ -33,8 +33,17 @@ function handleApiError(body: ApiErrorBody) {
 }
 
 export async function apiFetch<T = unknown>(path: string, opts: RequestInit = {}): Promise<T | null> {
+  // Wait for the shared session hydration before checking session.value —
+  // without this, requests fired before hydration completes (most likely
+  // right after a cookie/storage reset) saw session.value still null and
+  // failed silently here, even though the user was actually authenticated.
+  await waitForSession();
   const { session } = useAuth();
-  if (!session.value) throw new ApiError('unauthorized', 'no local session');
+  if (!session.value) {
+    const body = { error: 'unauthorized', detail: 'no local session' };
+    handleApiError(body);
+    throw new ApiError('unauthorized', 'no local session');
+  }
 
   const controller = new AbortController();
   inFlight.add(controller);

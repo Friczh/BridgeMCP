@@ -61,6 +61,18 @@ function onLogoutClick() {
     @click="mobileOpen = false"
   />
 
+  <!-- mobile toggle: rendered outside the collapsible aside, since the aside
+       itself is width:0 when closed on mobile and would clip its own
+       trigger button, making it permanently unreachable. -->
+  <button
+    v-if="isMobile && !mobileOpen"
+    aria-label="Open navigation"
+    class="fixed top-3 left-3 z-30 text-ink bg-bg-sidebar border border-rule rounded-sidebar p-2"
+    @click="toggle"
+  >
+    <Menu class="icon w-5 h-5" />
+  </button>
+
   <aside
     class="fixed top-0 left-0 bottom-0 z-30 bg-bg-sidebar border-r border-rule flex flex-col transition-[width] duration-200 ease-out overflow-hidden"
     :style="{ width: isMobile ? (mobileOpen ? '260px' : '0px') : expanded ? '240px' : '64px' }"

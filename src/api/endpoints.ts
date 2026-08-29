@@ -66,5 +66,5 @@ export async function revokeToken(id: string): Promise<void> {
 
 export async function listAudit(): Promise<AuditEntry[]> {
   const body = await apiFetch('/manage/audit');
-  return unwrap<AuditEntry>(body, 'entries');
+  return unwrap<AuditEntry>(body, 'audit');
 }

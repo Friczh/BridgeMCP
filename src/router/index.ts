@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router';
-import { supabase } from '@/lib/supabase';
+import { useAuth, waitForSession } from '@/composables/useAuth';
 
 const router = createRouter({
   history: createWebHistory(),
@@ -33,8 +33,12 @@ const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
-  const { data } = await supabase.auth.getSession();
-  const authed = data.session !== null;
+  // Awaits the same shared hydration promise useAuth/apiFetch use — a
+  // separate independent getSession() call here previously let this guard
+  // and useAuth's own session.value disagree during the hydration window.
+  await waitForSession();
+  const { isAuthenticated } = useAuth();
+  const authed = isAuthenticated();
 
   if (to.meta.requiresAuth && !authed) {
     return { name: 'login', query: { redirect: to.fullPath } };
