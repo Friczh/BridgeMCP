@@ -28,6 +28,12 @@ export interface AuditEntry {
   called_at: string;
 }
 
+export interface AuditDailyStat {
+  date: string; // YYYY-MM-DD, UTC
+  ok_count: number;
+  error_count: number;
+}
+
 export interface HealthCheckResult {
   status: 'ok' | 'error' | 'timeout';
   http_status?: number;

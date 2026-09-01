@@ -3,6 +3,7 @@ import type {
   McpConnection,
   BridgeToken,
   AuditEntry,
+  AuditDailyStat,
   CreateConnectionResponse,
   CreateTokenResponse,
   AuthType,
@@ -64,7 +65,34 @@ export async function revokeToken(id: string): Promise<void> {
   await apiFetch(`/manage/tokens/${id}`, { method: 'DELETE' });
 }
 
-export async function listAudit(): Promise<AuditEntry[]> {
-  const body = await apiFetch('/manage/audit');
+export interface AuditFilters {
+  tool_name?: string;
+  success?: 'true' | 'false';
+  date_from?: string;
+  date_to?: string;
+  connection_id?: string; // uuid or "null" sentinel for orphaned rows
+  bridge_token_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function listAudit(filters: AuditFilters = {}): Promise<AuditEntry[]> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== '') params.set(key, String(value));
+  }
+  const qs = params.toString();
+  const body = await apiFetch(`/manage/audit${qs ? `?${qs}` : ''}`);
   return unwrap<AuditEntry>(body, 'audit');
+}
+
+// Unconditional — ignores any active filters, deletes everything (design.md:
+// "always clear everything," no soft delete, no undo).
+export async function clearAudit(): Promise<void> {
+  await apiFetch('/manage/audit', { method: 'DELETE' });
+}
+
+export async function getAuditStats(days = 7): Promise<AuditDailyStat[]> {
+  const body = await apiFetch(`/manage/audit/stats?days=${days}`);
+  return unwrap<AuditDailyStat>(body, 'stats');
 }
