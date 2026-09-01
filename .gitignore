@@ -1,0 +1,14 @@
+node_modules
+.wrangler
+.dev.vars
+*.log
+
+# Exclude dependencies and build/cache outputs
+node_modules/
+.wrangler/
+.dev.vars
+
+# Exclude dependencies and build/cache outputs
+node_modules/
+.wrangler/
+.dev.vars
