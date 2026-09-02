@@ -13,8 +13,9 @@ import { rangeStartIso, bucketByDay } from '../lib/audit-stats';
 import { ApiError } from '../lib/errors';
 import { checkConnectionHealth } from '../lib/health-check';
 import type { ConnectionRow } from '../lib/mcp-fanout';
+import account from './account';
 
-type Vars = { userId: string };
+type Vars = { userId: string; userEmail?: string };
 
 const manage = new Hono<{ Bindings: Env; Variables: Vars }>();
 
@@ -29,8 +30,9 @@ manage.use('*', async (c, next) => {
   const token = authHeader.slice('Bearer '.length);
 
   try {
-    const { sub } = await verifySupabaseJwt(token, c.env);
+    const { sub, email } = await verifySupabaseJwt(token, c.env);
     c.set('userId', sub);
+    c.set('userEmail', email);
   } catch {
     // Never leak which specific check failed.
     throw new ApiError(401, 'unauthorized', 'invalid token');
@@ -38,6 +40,8 @@ manage.use('*', async (c, next) => {
 
   await next();
 });
+
+manage.route('/account', account);
 
 // ---- Connections ----
 
