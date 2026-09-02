@@ -27,7 +27,25 @@ export function useAuth() {
   return {
     session: readonly(session),
     sessionReady: readonly(sessionReady),
+    // Session presence only — does NOT mean the user is allowed into
+    // protected routes. signInWithPassword() creates a real, persisted
+    // session at aal1 even when the account has 2FA and the MFA step
+    // hasn't been completed yet, so this alone is not a safe authorization
+    // check. Use isFullyAuthenticated() for that.
     isAuthenticated: () => session.value !== null,
+    // The actual authorization check: session exists AND, if the account
+    // has a verified TOTP factor, the session has been elevated to aal2.
+    // Router guard bug this fixes: previously only session presence was
+    // checked, so a page refresh (or just typing /dashboard in the URL
+    // bar) during the "enter your code" step re-hydrated the already-real
+    // aal1 session from storage and walked straight past the guard — the
+    // on-screen MFA prompt was cosmetic, not an actual boundary.
+    isFullyAuthenticated: async () => {
+      if (!session.value) return false;
+      const { data: aal, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (error) return false;
+      return aal.currentLevel === aal.nextLevel;
+    },
     signOut: () => supabase.auth.signOut(),
   };
 }

@@ -37,8 +37,12 @@ router.beforeEach(async (to) => {
   // separate independent getSession() call here previously let this guard
   // and useAuth's own session.value disagree during the hydration window.
   await waitForSession();
-  const { isAuthenticated } = useAuth();
-  const authed = isAuthenticated();
+  const { isFullyAuthenticated } = useAuth();
+  // Checks session presence AND aal2 (if the account has 2FA) — session
+  // presence alone was the earlier bug: it let a page refresh mid-MFA-
+  // challenge bypass the code step entirely, since signInWithPassword
+  // already persists a real aal1 session before the code is ever verified.
+  const authed = await isFullyAuthenticated();
 
   if (to.meta.requiresAuth && !authed) {
     return { name: 'login', query: { redirect: to.fullPath } };

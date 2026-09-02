@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { supabase } from '@/lib/supabase';
 import Button from '@/components/Button.vue';
@@ -32,6 +32,27 @@ function finishLogin() {
   const redirect = (route.query.redirect as string) || '/dashboard';
   router.push(redirect);
 }
+
+// If the router guard bounced here because a persisted aal1 session exists
+// but 2FA hasn't been completed yet (e.g. a page refresh mid-challenge —
+// see router/index.ts), jump straight to the code step instead of forcing
+// the password to be retyped. The password step already succeeded; it's
+// only the code that's still outstanding.
+onMounted(async () => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) return;
+
+  const { data: aal, error: aalError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+  if (aalError || aal.currentLevel === aal.nextLevel) return;
+
+  const { data: factors, error: factorsError } = await supabase.auth.mfa.listFactors();
+  if (factorsError) return;
+  const totpFactor = factors.totp.find((f) => f.status === 'verified');
+  if (!totpFactor) return;
+
+  mfaFactorId.value = totpFactor.id;
+  mfaRequired.value = true;
+});
 
 async function onSubmit() {
   errorMessage.value = '';
