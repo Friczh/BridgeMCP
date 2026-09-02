@@ -32,7 +32,19 @@ function handleApiError(body: ApiErrorBody) {
   }
 }
 
-export async function apiFetch<T = unknown>(path: string, opts: RequestInit = {}): Promise<T | null> {
+interface ApiFetchOptions {
+  // Skips the global error popup + forced sign-out for an `unauthorized`
+  // response from this specific call. Used by the reauth flow: a wrong
+  // password/code there is an expected user-input error, not a stale or
+  // compromised session — it shouldn't log the user out.
+  silentUnauthorized?: boolean;
+}
+
+export async function apiFetch<T = unknown>(
+  path: string,
+  opts: RequestInit = {},
+  extra: ApiFetchOptions = {}
+): Promise<T | null> {
   // Wait for the shared session hydration before checking session.value —
   // without this, requests fired before hydration completes (most likely
   // right after a cookie/storage reset) saw session.value still null and
@@ -78,8 +90,10 @@ export async function apiFetch<T = unknown>(path: string, opts: RequestInit = {}
   }
 
   if (!res.ok) {
-    handleApiError(body as ApiErrorBody);
-    throw new ApiError((body as ApiErrorBody).error ?? 'request_failed', (body as ApiErrorBody).detail);
+    const errBody = body as ApiErrorBody;
+    const suppress = extra.silentUnauthorized && errBody.error === 'unauthorized';
+    if (!suppress) handleApiError(errBody);
+    throw new ApiError(errBody.error ?? 'request_failed', errBody.detail);
   }
   return body as T;
 }

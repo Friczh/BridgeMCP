@@ -3,25 +3,112 @@ import { ref, onMounted } from 'vue';
 import { Copy, Check } from 'lucide-vue-next';
 import Pane from '@/components/Pane.vue';
 import Button from '@/components/Button.vue';
+import Popup from '@/components/Popup.vue';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/composables/useAuth';
 import { useSystemPopup } from '@/composables/useSystemPopup';
+import { apiFetch } from '@/api/client';
 import { CONFIG } from '@/config';
 
 const { session } = useAuth();
 const { showConfirm } = useSystemPopup();
 
+// ---- Re-authentication gate (server-enforced) ----
+// Required before any sensitive settings action (password change, 2FA disable).
+// Both steps are verified by the Worker, not just the browser — a stolen/replayed
+// session token alone can't complete this, since the Worker independently re-checks
+// the password against Supabase Auth and, for step 2, a fresh TOTP code. Success
+// yields a short-lived (2 min) reauth token that the actual mutation call must send
+// back as `X-Reauth-Token`. See design.md "Server-side re-authentication".
+const reauthOpen = ref(false);
+const reauthStep = ref<'password' | 'code'>('password');
+const reauthPassword = ref('');
+const reauthCode = ref('');
+const reauthPartialToken = ref('');
+const reauthError = ref('');
+const reauthSubmitting = ref(false);
+let pendingAction: ((reauthToken: string) => void | Promise<void>) | null = null;
+
+function requireReauth(action: (reauthToken: string) => void | Promise<void>) {
+  pendingAction = action;
+  reauthStep.value = 'password';
+  reauthPassword.value = '';
+  reauthCode.value = '';
+  reauthPartialToken.value = '';
+  reauthError.value = '';
+  reauthOpen.value = true;
+}
+
+async function submitReauthPassword() {
+  reauthError.value = '';
+  reauthSubmitting.value = true;
+  try {
+    const res = await apiFetch<{ status: string; reauth_token?: string; partial_token?: string }>(
+      '/manage/account/reauth/password',
+      { method: 'POST', body: JSON.stringify({ password: reauthPassword.value }) },
+      { silentUnauthorized: true }
+    );
+    if (res?.status === 'mfa_required' && res.partial_token) {
+      reauthPartialToken.value = res.partial_token;
+      reauthStep.value = 'code';
+      return;
+    }
+    if (res?.reauth_token) await completeReauth(res.reauth_token);
+  } catch {
+    reauthError.value = 'Incorrect password.';
+  } finally {
+    reauthSubmitting.value = false;
+  }
+}
+
+async function submitReauthCode() {
+  reauthError.value = '';
+  reauthSubmitting.value = true;
+  try {
+    const res = await apiFetch<{ status: string; reauth_token: string }>(
+      '/manage/account/reauth/mfa',
+      { method: 'POST', body: JSON.stringify({ partial_token: reauthPartialToken.value, code: reauthCode.value }) },
+      { silentUnauthorized: true }
+    );
+    if (res?.reauth_token) await completeReauth(res.reauth_token);
+  } catch {
+    reauthError.value = 'Invalid code.';
+  } finally {
+    reauthSubmitting.value = false;
+  }
+}
+
+async function completeReauth(reauthToken: string) {
+  const action = pendingAction;
+  pendingAction = null;
+  reauthOpen.value = false;
+  if (action) await action(reauthToken);
+}
+
 // ---- Password ----
-// Client-side only via supabase.auth.updateUser — no Worker route (per design.md).
+// Mutation goes through the Worker (POST /manage/account/password, requires
+// X-Reauth-Token) — not supabase.auth.updateUser directly — so it's actually
+// gated by the reauth check above, not just the UI trigger for it.
+// Fields live behind a popup opened only after requireReauth() succeeds; the
+// Pane itself only ever shows a button, never the form.
+const passwordFormOpen = ref(false);
+const activeReauthToken = ref('');
 const newPassword = ref('');
 const confirmPassword = ref('');
 const passwordSubmitting = ref(false);
 const passwordError = ref('');
 const passwordSuccess = ref('');
 
+function openPasswordForm(reauthToken: string) {
+  activeReauthToken.value = reauthToken;
+  newPassword.value = '';
+  confirmPassword.value = '';
+  passwordError.value = '';
+  passwordFormOpen.value = true;
+}
+
 async function onChangePassword() {
   passwordError.value = '';
-  passwordSuccess.value = '';
 
   if (newPassword.value !== confirmPassword.value) {
     passwordError.value = 'Passwords do not match.';
@@ -33,13 +120,19 @@ async function onChangePassword() {
   }
 
   passwordSubmitting.value = true;
-  const { error } = await supabase.auth.updateUser({ password: newPassword.value });
-  passwordSubmitting.value = false;
-
-  if (error) {
-    passwordError.value = error.message;
+  try {
+    await apiFetch('/manage/account/password', {
+      method: 'POST',
+      headers: { 'X-Reauth-Token': activeReauthToken.value },
+      body: JSON.stringify({ password: newPassword.value }),
+    });
+  } catch {
+    passwordSubmitting.value = false;
+    passwordError.value = 'Could not update password. Try again.';
     return;
   }
+  passwordSubmitting.value = false;
+  passwordFormOpen.value = false;
   passwordSuccess.value = 'Password updated.';
   newPassword.value = '';
   confirmPassword.value = '';
@@ -77,7 +170,7 @@ async function loadFactors() {
 }
 onMounted(loadFactors);
 
-async function startEnroll() {
+async function startEnrollInner() {
   enrollError.value = '';
   const { data, error } = await supabase.auth.mfa.enroll({ factorType: 'totp' });
   if (error) {
@@ -92,6 +185,13 @@ async function startEnroll() {
   };
   enrollCode.value = '';
   secretCopied.value = false;
+}
+function startEnroll() {
+  // Enrollment itself must stay a direct Supabase Auth call (it needs a live
+  // user session to mint/display the QR+secret) — the Worker has no route
+  // for it. This reauth gate only protects the "start enroll" trigger in the
+  // UI; see design.md for why enroll can't be moved fully server-side.
+  requireReauth(startEnrollInner);
 }
 
 function cancelEnroll() {
@@ -133,16 +233,19 @@ async function confirmEnroll() {
 }
 
 function onDisable2fa() {
-  if (!factorId.value) return;
-  const id = factorId.value;
-  showConfirm({
-    title: 'Disable two-factor authentication',
-    message: 'This removes your authenticator app as a sign-in requirement. Continue?',
-    confirmLabel: 'Disable',
-    onConfirm: async () => {
-      await supabase.auth.mfa.unenroll({ factorId: id });
-      await loadFactors();
-    },
+  requireReauth((reauthToken) => {
+    showConfirm({
+      title: 'Disable two-factor authentication',
+      message: 'This removes your authenticator app as a sign-in requirement. Continue?',
+      confirmLabel: 'Disable',
+      onConfirm: async () => {
+        await apiFetch('/manage/account/mfa/disable', {
+          method: 'POST',
+          headers: { 'X-Reauth-Token': reauthToken },
+        });
+        await loadFactors();
+      },
+    });
   });
 }
 </script>
@@ -166,35 +269,8 @@ function onDisable2fa() {
     <div class="h-6"></div>
 
     <Pane title="password">
-      <p v-if="passwordError" class="text-danger text-sm mb-4">{{ passwordError }}</p>
       <p v-if="passwordSuccess" class="text-accent text-sm mb-4">{{ passwordSuccess }}</p>
-      <form class="space-y-5 max-w-sm" @submit.prevent="onChangePassword">
-        <div>
-          <label for="new-password" class="block text-xs font-medium text-muted mb-1.5">New password</label>
-          <input
-            id="new-password"
-            v-model="newPassword"
-            type="password"
-            required
-            autocomplete="new-password"
-            class="w-full bg-transparent border-b border-rule focus:border-accent outline-none py-2 text-sm"
-          />
-        </div>
-        <div>
-          <label for="confirm-password" class="block text-xs font-medium text-muted mb-1.5">Confirm password</label>
-          <input
-            id="confirm-password"
-            v-model="confirmPassword"
-            type="password"
-            required
-            autocomplete="new-password"
-            class="w-full bg-transparent border-b border-rule focus:border-accent outline-none py-2 text-sm"
-          />
-        </div>
-        <Button type="submit" variant="primary" :disabled="passwordSubmitting">
-          {{ passwordSubmitting ? 'Updating…' : 'Update password' }}
-        </Button>
-      </form>
+      <Button variant="primary" @click="requireReauth(openPasswordForm)">Update password</Button>
     </Pane>
 
     <div class="h-6"></div>
@@ -266,5 +342,86 @@ function onDisable2fa() {
         </template>
       </template>
     </Pane>
+
+    <Popup v-model:open="reauthOpen" title="Confirm it's you">
+      <p v-if="reauthError" class="text-danger text-sm mb-4">{{ reauthError }}</p>
+
+      <form v-if="reauthStep === 'password'" class="space-y-5" @submit.prevent="submitReauthPassword">
+        <p class="text-muted text-sm mb-2">Re-enter your password to continue.</p>
+        <div>
+          <label for="reauth-password" class="block text-xs font-medium text-muted mb-1.5">Password</label>
+          <input
+            id="reauth-password"
+            v-model="reauthPassword"
+            type="password"
+            required
+            autocomplete="current-password"
+            class="w-full bg-transparent border-b border-rule focus:border-accent outline-none py-2 text-sm"
+          />
+        </div>
+        <div class="flex gap-3">
+          <Button type="submit" variant="primary" :disabled="reauthSubmitting">
+            {{ reauthSubmitting ? 'Verifying…' : 'Continue' }}
+          </Button>
+          <Button type="button" variant="secondary" @click="reauthOpen = false">Cancel</Button>
+        </div>
+      </form>
+
+      <form v-else class="space-y-5" @submit.prevent="submitReauthCode">
+        <p class="text-muted text-sm mb-2">Enter the code from your authenticator app.</p>
+        <div>
+          <label for="reauth-code" class="block text-xs font-medium text-muted mb-1.5">Authentication code</label>
+          <input
+            id="reauth-code"
+            v-model="reauthCode"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            maxlength="6"
+            required
+            class="w-full bg-transparent border-b border-rule focus:border-accent outline-none py-2 text-sm mono tracking-widest"
+          />
+        </div>
+        <div class="flex gap-3">
+          <Button type="submit" variant="primary" :disabled="reauthSubmitting">
+            {{ reauthSubmitting ? 'Verifying…' : 'Continue' }}
+          </Button>
+          <Button type="button" variant="secondary" @click="reauthOpen = false">Cancel</Button>
+        </div>
+      </form>
+    </Popup>
+
+    <Popup v-model:open="passwordFormOpen" title="Update password">
+      <p v-if="passwordError" class="text-danger text-sm mb-4">{{ passwordError }}</p>
+      <form class="space-y-5" @submit.prevent="onChangePassword">
+        <div>
+          <label for="new-password" class="block text-xs font-medium text-muted mb-1.5">New password</label>
+          <input
+            id="new-password"
+            v-model="newPassword"
+            type="password"
+            required
+            autocomplete="new-password"
+            class="w-full bg-transparent border-b border-rule focus:border-accent outline-none py-2 text-sm"
+          />
+        </div>
+        <div>
+          <label for="confirm-password" class="block text-xs font-medium text-muted mb-1.5">Confirm password</label>
+          <input
+            id="confirm-password"
+            v-model="confirmPassword"
+            type="password"
+            required
+            autocomplete="new-password"
+            class="w-full bg-transparent border-b border-rule focus:border-accent outline-none py-2 text-sm"
+          />
+        </div>
+        <div class="flex gap-3">
+          <Button type="submit" variant="primary" :disabled="passwordSubmitting">
+            {{ passwordSubmitting ? 'Updating…' : 'Update password' }}
+          </Button>
+          <Button type="button" variant="secondary" @click="passwordFormOpen = false">Cancel</Button>
+        </div>
+      </form>
+    </Popup>
   </div>
 </template>
