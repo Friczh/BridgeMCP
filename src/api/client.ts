@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuth, waitForSession } from '@/composables/useAuth';
 import { useSystemPopup } from '@/composables/useSystemPopup';
 import { friendlyMessage, NETWORK_ERROR_MESSAGE } from '@/api/errorMessages';
+import router from '@/router';
 import type { ApiErrorBody } from '@/types';
 
 // Tracks in-flight /manage/* requests so an `unauthorized` response can
@@ -28,7 +29,12 @@ function handleApiError(body: ApiErrorBody) {
   if (code === 'unauthorized') {
     inFlight.forEach((c) => c.abort());
     inFlight.clear();
-    void supabase.auth.signOut();
+    void supabase.auth.signOut().then(() => {
+      // Same reasoning as the manual logout button: signOut() alone doesn't
+      // move the user off a now-invalid dashboard page, since nothing here
+      // is a navigation the router guard would react to.
+      void router.push({ name: 'login' });
+    });
   }
 }
 

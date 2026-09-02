@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { RouterLink, useRoute } from 'vue-router';
+import { RouterLink, useRoute, useRouter } from 'vue-router';
 import {
   LayoutDashboard,
   Share2,
@@ -18,6 +18,7 @@ import { useSystemPopup } from '@/composables/useSystemPopup';
 import { useSidebar } from '@/composables/useSidebar';
 
 const route = useRoute();
+const router = useRouter();
 const { session, signOut } = useAuth();
 const { theme, toggle: toggleTheme } = useTheme();
 const { showConfirm } = useSystemPopup();
@@ -48,6 +49,10 @@ function onLogoutClick() {
     confirmLabel: 'Log out',
     onConfirm: async () => {
       await signOut();
+      // The router guard only runs on an actual navigation — clearing the
+      // session alone doesn't trigger it, so this page would otherwise stay
+      // rendered with a null session until the user manually navigates.
+      await router.push({ name: 'login' });
     },
   });
 }
